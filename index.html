@@ -278,7 +278,7 @@ tr:hover td{background:#FAFCFA;}
         <p id="qfHint">Ce code-barres ne contient pas le lot / la péremption (souvent un EAN13 classique). Complète et valide avec Entrée.</p>
         <div class="qf-row">
           <div><label>Produit</label><input type="text" id="qfName"></div>
-          <div><label>Lot</label><input type="text" id="qfLot"></div>
+          <div><label>Lot (optionnel)</label><input type="text" id="qfLot"></div>
           <div><label>Péremption (jj/mm/aaaa)</label><input type="text" id="qfExp" placeholder="30/09/2028"></div>
           <div><label>Quantité</label><input type="text" id="qfQty" value="1"></div>
           <div><label>Rayon</label><input type="text" id="qfRayon"></div>
@@ -584,16 +584,15 @@ async function handleScanValue(raw){
   const parsed = parseGS1(raw);
   let cip13 = gtinToCip13(parsed.gtin);
 
-  if(cip13 && parsed.lot && parsed.expiry){
-    await processFullScan(cip13, parsed.lot, parsed.expiry);
+  if(cip13 && parsed.expiry){
+    // GTIN + péremption décodés : on enregistre directement, le lot est optionnel
+    // (il pourra être complété à la main sur le Google Sheet si besoin).
+    await processFullScan(cip13, parsed.lot || '', parsed.expiry);
   } else if(/^\d{8,13}$/.test(raw)){
     cip13 = raw.replace(/\D/g,'').slice(-13);
     openQuickForm(cip13, {});
   } else if(cip13){
-    // GTIN (et souvent péremption) décodés, mais lot absent ou fusionné avec le numéro
-    // de série faute de séparateur GS1 transmis par le scanner : on ne devine pas le
-    // lot, on le demande — en pré-remplissant ce qu'on sait déjà.
-    openQuickForm(cip13, {expiry: parsed.expiry, ambiguous: !parsed.expiry ? false : true});
+    openQuickForm(cip13, {});
   } else {
     toast('Code non reconnu — vérifie le format du scanner', 'err');
   }
@@ -619,10 +618,10 @@ async function processFullScan(cip13, lot, expiry, extra){
 
 function showProductCard(nom, lot, expiry, qty, wasExisting, rayon, tiroir, colonne){
   document.getElementById('pcName').textContent = nom;
-  document.getElementById('pcLot').textContent = lot;
+  document.getElementById('pcLot').textContent = lot || '—';
   document.getElementById('pcExp').textContent = expiry;
   document.getElementById('pcQty').textContent = qty!=null ? qty : '—';
-  document.getElementById('pcDelta').textContent = wasExisting ? 'Lot déjà connu — quantité mise à jour' : 'Nouveau lot créé';
+  document.getElementById('pcDelta').textContent = wasExisting ? 'Produit déjà en stock — quantité mise à jour' : 'Nouvelle entrée créée';
   const loc = document.getElementById('pcLoc');
   if(rayon || tiroir || colonne){
     loc.style.display='block';
@@ -644,14 +643,7 @@ function openQuickForm(cip13, prefill){
   document.getElementById('qfRayon').value = '';
   document.getElementById('qfTiroir').value = '';
   document.getElementById('qfCol').value = '';
-  const hint = document.getElementById('qfHint');
-  if(prefill.ambiguous){
-    hint.textContent = 'GTIN et péremption décodés automatiquement — le lot n\'a pas été transmis par le scanner (séparateur GS1 manquant). Il ne reste plus qu\'à le saisir.';
-  } else {
-    hint.textContent = 'Ce code-barres ne contient pas le lot / la péremption (souvent un EAN13 classique). Complète et valide avec Entrée.';
-  }
   quickForm.classList.add('show');
-  // Si la péremption est déjà connue, le seul champ qui manque vraiment est le lot.
   const focusTarget = prefill.expiry ? 'qfLot' : 'qfName';
   setTimeout(()=>document.getElementById(focusTarget).focus(), 30);
 }
@@ -668,14 +660,14 @@ quickForm.addEventListener('keydown', (e)=>{
 async function saveQuickForm(){
   const cip13 = quickForm.dataset.cip13;
   const nom = document.getElementById('qfName').value.trim() || ('Produit CIP '+cip13);
-  const lot = document.getElementById('qfLot').value.trim();
+  const lot = document.getElementById('qfLot').value.trim(); // optionnel
   const expiry = document.getElementById('qfExp').value.trim();
   const qty = parseInt(document.getElementById('qfQty').value,10) || 1;
   const rayon = document.getElementById('qfRayon').value.trim();
   const tiroir = document.getElementById('qfTiroir').value.trim();
   const colonne = document.getElementById('qfCol').value.trim();
-  if(!lot || !/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)){
-    toast('Lot et péremption (jj/mm/aaaa) obligatoires', 'err');
+  if(!/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)){
+    toast('Péremption (jj/mm/aaaa) obligatoire', 'err');
     return;
   }
   await processFullScan(cip13, lot, expiry, {nom, quantite: qty, rayon, tiroir, colonne});
@@ -716,7 +708,7 @@ function renderStock(rows){
     const loc = [r.rayon,r.tiroir,r.colonne].filter(Boolean).join(' / ') || '—';
     return '<tr>'+
       '<td style="font-family:var(--font-body);font-weight:600;">'+escapeHtml(r.nom)+'</td>'+
-      '<td>'+escapeHtml(r.lot)+'</td>'+
+      '<td>'+(escapeHtml(r.lot)||'—')+'</td>'+
       '<td>'+r.expiry+'</td>'+
       '<td>'+r.quantite+'</td>'+
       '<td>'+loc+'</td>'+
@@ -782,7 +774,7 @@ function renderAlertGroup(title, rows, crit){
       const loc = [r.rayon,r.tiroir,r.colonne].filter(Boolean);
       return '<div class="alert-item'+(crit?' crit':'')+'">'+
         '<div><div class="alert-name">'+escapeHtml(r.nom)+'</div>'+
-        '<div class="alert-meta">Lot '+escapeHtml(r.lot)+' · Expire le '+r.expiry+' · '+r.quantite+' bte(s)</div></div>'+
+        '<div class="alert-meta">Lot '+(escapeHtml(r.lot)||'non renseigné')+' · Expire le '+r.expiry+' · '+r.quantite+' bte(s)</div></div>'+
         '<div class="alert-days">Expire dans '+days+' j</div>'+
         (loc.length ? '<div class="alert-loc">➡ Rayon '+(r.rayon||'—')+' · Tiroir '+(r.tiroir||'—')+' · Colonne '+(r.colonne||'—')+'</div>' : '<div class="alert-loc">Emplacement non renseigné</div>')+
         '</div>';
@@ -811,7 +803,7 @@ async function runSearch(q){
   if(!rows.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Aucun résultat</td></tr>'; return; }
   body.innerHTML = rows.map(r=>{
     const loc = [r.rayon,r.tiroir,r.colonne].filter(Boolean).join(' / ') || '—';
-    return '<tr><td style="font-family:var(--font-body);font-weight:600;">'+escapeHtml(r.nom)+'</td><td>'+escapeHtml(r.lot)+'</td><td>'+r.expiry+'</td><td>'+r.quantite+'</td><td>'+loc+'</td></tr>';
+    return '<tr><td style="font-family:var(--font-body);font-weight:600;">'+escapeHtml(r.nom)+'</td><td>'+(escapeHtml(r.lot)||'—')+'</td><td>'+r.expiry+'</td><td>'+r.quantite+'</td><td>'+loc+'</td></tr>';
   }).join('');
 }
 
