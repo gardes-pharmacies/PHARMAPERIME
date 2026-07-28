@@ -279,7 +279,7 @@ tr:hover td{background:#FAFCFA;}
         <div class="qf-row">
           <div><label>Produit</label><input type="text" id="qfName"></div>
           <div><label>Lot (optionnel)</label><input type="text" id="qfLot"></div>
-          <div><label>Péremption (jj/mm/aaaa)</label><input type="text" id="qfExp" placeholder="30/09/2028"></div>
+          <div><label>Péremption (jj/mm/aaaa)</label><input type="text" id="qfExp" placeholder="jj/mm/aaaa"></div>
           <div><label>Quantité</label><input type="text" id="qfQty" value="1"></div>
           <div><label>Rayon</label><input type="text" id="qfRayon"></div>
           <div><label>Tiroir</label><input type="text" id="qfTiroir"></div>
@@ -491,6 +491,7 @@ async function flushPending(){
 /* ---------- GS1 DataMatrix parsing ---------- */
 const GS = String.fromCharCode(29);
 const FIXED_AI = {'00':18,'01':14,'11':6,'13':6,'15':6,'17':6,'20':2};
+const DATE_AI_TAIL = {'11':6,'13':6,'15':6,'17':6}; // dates only, checked when a field runs unterminated to end-of-string
 const VARIABLE_AI = new Set(['10','21','22','240','241','30']);
 
 function parseGS1(raw){
@@ -517,14 +518,47 @@ function parseGS1(raw){
       const realAi = str.substr(i,aiLen);
       let rest = str.slice(i+aiLen);
       const gsPos = rest.indexOf(GS);
-      const val = gsPos===-1 ? rest : rest.slice(0,gsPos);
+      let val = gsPos===-1 ? rest : rest.slice(0,gsPos);
+      if(gsPos===-1){
+        // No GS separator found: this field runs to the end of the scanned string.
+        // A fixed-length date (17/11/13/15) may be sitting un-terminated at the very
+        // tail (common when the scanner doesn't transmit GS1 group separators) — peel
+        // it off before treating the rest as this field's value.
+        val = extractTrailingDateAI(val, out);
+      }
       applyAI(realAi, val, out);
-      i += aiLen + val.length + (gsPos===-1?0:1);
+      i = gsPos===-1 ? str.length : (i + aiLen + val.length + 1);
     } else {
       break; // unknown AI — stop, keep whatever we parsed so far
     }
   }
   return out;
+}
+function extractTrailingDateAI(val, out){
+  let changed = true;
+  while(changed){
+    changed = false;
+    for(const ai in DATE_AI_TAIL){
+      const len = DATE_AI_TAIL[ai];
+      const totalLen = 2+len;
+      if(val.length > totalLen){
+        const tailAI = val.slice(val.length-totalLen, val.length-len);
+        const tailVal = val.slice(val.length-len);
+        if(tailAI===ai && /^\d{6}$/.test(tailVal) && applyDateIfValid(ai, tailVal, out)){
+          val = val.slice(0, val.length-totalLen);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return val;
+}
+function applyDateIfValid(ai, val, out){
+  const d = yymmddToDate(val);
+  if(!d) return false; // not a plausible date — leave it as part of the variable value
+  applyAI(ai, val, out);
+  return true;
 }
 function applyAI(ai, val, out){
   if(ai==='01') out.gtin = val;
@@ -537,6 +571,7 @@ function yymmddToDate(yymmdd){
   let yy = parseInt(yymmdd.slice(0,2),10);
   let mm = parseInt(yymmdd.slice(2,4),10);
   let dd = parseInt(yymmdd.slice(4,6),10);
+  if(mm<1||mm>12||dd<0||dd>31) return null;
   const year = 2000+yy;
   if(dd===0){ // GS1: day 00 means last day of month
     dd = new Date(year, mm, 0).getDate();
@@ -657,17 +692,29 @@ quickForm.addEventListener('keydown', (e)=>{
   if(e.key==='Escape'){ closeQuickForm(); }
   if(e.key==='Enter' && e.target.tagName==='INPUT'){ e.preventDefault(); saveQuickForm(); }
 });
+function normalizeDate(str){
+  const m = String(str).trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if(!m) return null;
+  let [, d, mo, y] = m;
+  const dd = parseInt(d,10), mm = parseInt(mo,10);
+  if(mm<1||mm>12||dd<1||dd>31) return null;
+  if(y.length===2) y = '20'+y;
+  return d.padStart(2,'0')+'/'+mo.padStart(2,'0')+'/'+y;
+}
+
 async function saveQuickForm(){
   const cip13 = quickForm.dataset.cip13;
   const nom = document.getElementById('qfName').value.trim() || ('Produit CIP '+cip13);
   const lot = document.getElementById('qfLot').value.trim(); // optionnel
-  const expiry = document.getElementById('qfExp').value.trim();
+  const expiryRaw = document.getElementById('qfExp').value.trim();
   const qty = parseInt(document.getElementById('qfQty').value,10) || 1;
   const rayon = document.getElementById('qfRayon').value.trim();
   const tiroir = document.getElementById('qfTiroir').value.trim();
   const colonne = document.getElementById('qfCol').value.trim();
-  if(!/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)){
-    toast('Péremption (jj/mm/aaaa) obligatoire', 'err');
+  const expiry = normalizeDate(expiryRaw);
+  if(!expiry){
+    toast(expiryRaw ? 'Date de péremption invalide — utilise le format jj/mm/aaaa' : 'Renseigne la date de péremption (jj/mm/aaaa)', 'err');
+    document.getElementById('qfExp').focus();
     return;
   }
   await processFullScan(cip13, lot, expiry, {nom, quantite: qty, rayon, tiroir, colonne});
