@@ -275,7 +275,7 @@ tr:hover td{background:#FAFCFA;}
 
       <div class="quickform" id="quickForm">
         <h3>Nouveau lot — infos manquantes</h3>
-        <p>Ce code-barres ne contient pas le lot / la péremption (souvent un EAN13 classique). Complète et valide avec Entrée.</p>
+        <p id="qfHint">Ce code-barres ne contient pas le lot / la péremption (souvent un EAN13 classique). Complète et valide avec Entrée.</p>
         <div class="qf-row">
           <div><label>Produit</label><input type="text" id="qfName"></div>
           <div><label>Lot</label><input type="text" id="qfLot"></div>
@@ -588,9 +588,12 @@ async function handleScanValue(raw){
     await processFullScan(cip13, parsed.lot, parsed.expiry);
   } else if(/^\d{8,13}$/.test(raw)){
     cip13 = raw.replace(/\D/g,'').slice(-13);
-    openQuickForm(cip13);
+    openQuickForm(cip13, {});
   } else if(cip13){
-    openQuickForm(cip13);
+    // GTIN (et souvent péremption) décodés, mais lot absent ou fusionné avec le numéro
+    // de série faute de séparateur GS1 transmis par le scanner : on ne devine pas le
+    // lot, on le demande — en pré-remplissant ce qu'on sait déjà.
+    openQuickForm(cip13, {expiry: parsed.expiry, ambiguous: !parsed.expiry ? false : true});
   } else {
     toast('Code non reconnu — vérifie le format du scanner', 'err');
   }
@@ -630,18 +633,27 @@ function showProductCard(nom, lot, expiry, qty, wasExisting, rayon, tiroir, colo
 
 /* ---------- Quick form for barcodes without lot/expiry ---------- */
 const quickForm = document.getElementById('quickForm');
-function openQuickForm(cip13){
+function openQuickForm(cip13, prefill){
+  prefill = prefill || {};
   document.getElementById('productCard').classList.remove('show');
   quickForm.dataset.cip13 = cip13;
   document.getElementById('qfName').value = productsCache[cip13] || '';
   document.getElementById('qfLot').value = '';
-  document.getElementById('qfExp').value = '';
+  document.getElementById('qfExp').value = prefill.expiry || '';
   document.getElementById('qfQty').value = '1';
   document.getElementById('qfRayon').value = '';
   document.getElementById('qfTiroir').value = '';
   document.getElementById('qfCol').value = '';
+  const hint = document.getElementById('qfHint');
+  if(prefill.ambiguous){
+    hint.textContent = 'GTIN et péremption décodés automatiquement — le lot n\'a pas été transmis par le scanner (séparateur GS1 manquant). Il ne reste plus qu\'à le saisir.';
+  } else {
+    hint.textContent = 'Ce code-barres ne contient pas le lot / la péremption (souvent un EAN13 classique). Complète et valide avec Entrée.';
+  }
   quickForm.classList.add('show');
-  setTimeout(()=>document.getElementById('qfName').focus(), 30);
+  // Si la péremption est déjà connue, le seul champ qui manque vraiment est le lot.
+  const focusTarget = prefill.expiry ? 'qfLot' : 'qfName';
+  setTimeout(()=>document.getElementById(focusTarget).focus(), 30);
 }
 function closeQuickForm(){
   quickForm.classList.remove('show');
